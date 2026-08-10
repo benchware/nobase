@@ -3,7 +3,7 @@ from __future__ import annotations
 import base64
 import unittest
 
-from encoded_detection.base64_detector import (
+from base64_detector import (
     looks_encoded_payload,
     reject_encoded_string,
 )

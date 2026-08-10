@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from .signatures import CODE_RE, MAGIC_PREFIXES
+from signatures import CODE_RE, MAGIC_PREFIXES
 
 
 MAX_TEXT_SCAN_LENGTH = 2 * 1024 * 1024

@@ -37,47 +37,39 @@ _PEM_ARMOR_RE = re.compile(
 
 
 # ---------------------------------------------------------
-# Base64 patterns
+# Base32 patterns
 # ---------------------------------------------------------
 
-_B64_STANDARD_RE = re.compile(
-    r"^[A-Za-z0-9+/]*={0,2}$"
-)
-
-_B64_URLSAFE_RE = re.compile(
-    r"^[A-Za-z0-9_-]*={0,2}$"
-)
-
-
-# Used for finding embedded/split Base64.
+# RFC 4648 Base32 alphabet:
+#   A-Z 2-7
 #
-# Start at 8 chars because fragments may have been split.
-_B64_FRAGMENT_RE = re.compile(
-    rf"[A-Za-z0-9+/_-]"
-    rf"{{{MIN_FRAGMENT_LENGTH},}}"
-    rf"={{0,2}}"
+# Base32 can use up to six "=" padding characters.
+_B32_RE = re.compile(
+    r"^[A-Z2-7]*={0,6}$",
+    re.IGNORECASE,
 )
 
+# Used for finding embedded/split Base32.
+_B32_FRAGMENT_RE = re.compile(
+    rf"[A-Z2-7]"
+    rf"{{{MIN_FRAGMENT_LENGTH},}}"
+    rf"={{0,6}}",
+    re.IGNORECASE,
+)
 
 # Characters allowed between intentionally split fragments.
-#
-# Limited to tiny gaps to prevent expensive reconstruction
-# across normal sentences.
 _SPLIT_SEPARATOR_RE = re.compile(
     r"^[\s,;|:.\u200b\u200c\u200d\ufeff]{1,4}$"
 )
 
-
 _ZERO_WIDTH_RE = re.compile(
     r"[\u200b\u200c\u200d\ufeff]"
 )
-
-
 # ---------------------------------------------------------
-# Base64 validation / decoding
+# Base32 validation / decoding
 # ---------------------------------------------------------
 
-def _normalize_padding(
+def _normalize_base32_padding(
     value: str,
 ) -> Optional[str]:
 
@@ -90,28 +82,20 @@ def _normalize_padding(
         len(value) - len(core)
     )
 
-    if supplied_padding > 2:
+    if supplied_padding > 6:
         return None
 
-    remainder = len(core) % 4
+    remainder = len(core) % 8
 
-    # Base64 cannot have a single leftover symbol.
-    if remainder == 1:
+    # RFC 4648 Base32 has no valid encodings with these
+    # numbers of unpadded characters in the final block.
+    if remainder in (1, 3, 6):
         return None
 
     required_padding = (
         -len(core)
-    ) % 4
+    ) % 8
 
-    # Accept:
-    #
-    #   TQ==
-    #   TQ
-    #
-    # Reject malformed:
-    #
-    #   TQ=
-    #   TWFu=
     if supplied_padding not in (
         0,
         required_padding,
@@ -124,49 +108,26 @@ def _normalize_padding(
     )
 
 
-def _decode_base64(
+def _decode_base32(
     value: str,
 ) -> Optional[bytes]:
 
     if len(value) < MIN_CANDIDATE_LENGTH:
         return None
 
-    # Fast character validation before attempting decode.
-    standard = (
-        _B64_STANDARD_RE.fullmatch(value)
-        is not None
-    )
-
-    urlsafe = (
-        _B64_URLSAFE_RE.fullmatch(value)
-        is not None
-    )
-
-    if not standard and not urlsafe:
+    if _B32_RE.fullmatch(value) is None:
         return None
 
-    padded = _normalize_padding(value)
+    padded = _normalize_base32_padding(value)
 
     if padded is None:
         return None
 
     try:
-
-        if standard:
-
-            decoded = base64.b64decode(
-                padded,
-                validate=True,
-            )
-
-        else:
-
-            decoded = base64.b64decode(
-                padded,
-                altchars=b"-_",
-                validate=True,
-            )
-
+        decoded = base64.b32decode(
+            padded,
+            casefold=True,
+        )
     except (binascii.Error, ValueError):
         return None
 
@@ -174,6 +135,68 @@ def _decode_base64(
         return None
 
     return decoded
+
+
+# ---------------------------------------------------------
+# Base32 confidence
+# ---------------------------------------------------------
+
+def _base32_confidence(
+    candidate: str,
+    decoded: bytes,
+    suspicious: bool,
+    text: Optional[str],
+) -> int:
+    """
+    Return a confidence score from 0-100 that candidate is
+    intentionally Base32-encoded content.
+
+    The score is deliberately conservative because ordinary
+    uppercase text can belong to the Base32 alphabet.
+    """
+
+    score = 0
+
+    core = candidate.rstrip("=")
+
+    # Strongest signal: the decoded payload itself is suspicious.
+    if suspicious:
+        score += 70
+
+    # Valid Base32 padding is a useful signal.
+    if "=" in candidate:
+        if candidate.endswith("="):
+            score += 10
+
+    # A correctly sized Base32 block is more convincing than
+    # arbitrary uppercase text.
+    if len(core) % 8 == 0:
+        score += 10
+
+    # Longer candidates provide more evidence.
+    if len(core) >= 24:
+        score += 10
+    elif len(core) >= 16:
+        score += 5
+
+    # Successfully decoded printable/text payload is useful,
+    # but not sufficient on its own.
+    if text is not None:
+        score += 5
+
+    # Reduce confidence for candidates consisting entirely of
+    # ordinary alphabetic uppercase text. This is where Base32
+    # has particularly bad false-positive behavior.
+    if (
+        core
+        and all(
+            "A" <= char.upper() <= "Z"
+            for char in core
+        )
+    ):
+        score -= 25
+
+    return max(0, min(100, score))
 
 
 # ---------------------------------------------------------
@@ -188,12 +211,12 @@ def _analyze_candidate(
     Returns:
 
         (
-            recognized_as_base64,
+            recognized_as_base32,
             suspicious
         )
     """
 
-    decoded = _decode_base64(
+    decoded = _decode_base32(
         candidate
     )
 
@@ -201,13 +224,13 @@ def _analyze_candidate(
         return False, False
 
     if len(decoded) > MAX_DECODED_LENGTH:
-        # Fail closed for unexpectedly huge decoded content.
         return True, True
 
     suspicious, text = inspect_payload(
         decoded
     )
 
+    # Directly suspicious decoded payload.
     if suspicious:
         return True, True
 
@@ -217,15 +240,49 @@ def _analyze_candidate(
     ):
         return True, False
 
-    # Nested Base64.
+    text = text.strip()
+
+    # ---------------------------------------------------------
+    # Nested Base32
+    #
+    # outer Base32
+    #       ↓
+    # inner Base32
+    #       ↓
+    # actual payload
+    # ---------------------------------------------------------
+
+    nested_decoded = _decode_base32(text)
+
+    if nested_decoded is not None:
+
+        _, nested_suspicious = _analyze_candidate(
+            text,
+            depth + 1,
+        )
+
+        if nested_suspicious:
+            return True, True
+
+        # It was valid Base32, even if the decoded payload
+        # wasn't suspicious.
+        return True, False
+
+    # ---------------------------------------------------------
+    # Embedded Base32
+    # ---------------------------------------------------------
+
     if _scan_embedded(
         text,
         depth + 1,
     ):
         return True, True
 
-    return True, False
+    # ---------------------------------------------------------
+    # The candidate itself was valid Base32.
+    # ---------------------------------------------------------
 
+    return True, False
 
 # ---------------------------------------------------------
 # Embedded / split scanning
@@ -263,7 +320,7 @@ def _scan_embedded(
 
         return suspicious
 
-    for match in _B64_FRAGMENT_RE.finditer(
+    for match in _B32_FRAGMENT_RE.finditer(
         text
     ):
 
@@ -284,15 +341,11 @@ def _scan_embedded(
                 return True
 
         # -------------------------------------------------
-        # Reconstruct intentionally split Base64:
+        # Reconstruct intentionally split Base32:
         #
-        #   abcdefgh ijklmnop
-        #   abcdefgh;ijklmnop
-        #   abcdefgh<ZWSP>ijklmnop
-        #
-        # We append fragment strings themselves rather than
-        # slicing the original text, avoiding the old bug
-        # where separators remained inside the candidate.
+        #   ABCDEFGH IJKLMNPQ
+        #   ABCDEFGH;IJKLMNPQ
+        #   ABCDEFGH<ZWSP>IJKLMNPQ
         # -------------------------------------------------
 
         if previous_end is None:
@@ -381,7 +434,7 @@ def _strip_wrapper(
     return value.strip(), wrapped
 
 
-def _compact_wrapped_base64(
+def _compact_wrapped_base32(
     value: str,
 ) -> str:
 
@@ -428,7 +481,7 @@ def looks_encoded_payload(
     # -----------------------------------------------------
     # Cheapest and most accurate path:
     #
-    # the entire input itself is Base64.
+    # the entire input itself is Base32.
     # -----------------------------------------------------
 
     if not any(
@@ -448,7 +501,7 @@ def looks_encoded_payload(
 
         # Important:
         #
-        # If the complete input is valid benign Base64,
+        # If the complete input is valid benign Base32,
         # don't waste CPU scanning arbitrary substrings
         # inside the encoded representation.
         if recognized:
@@ -461,7 +514,7 @@ def looks_encoded_payload(
     if wrapped:
 
         compact = (
-            _compact_wrapped_base64(
+            _compact_wrapped_base32(
                 value
             )
         )
@@ -480,7 +533,7 @@ def looks_encoded_payload(
             return False
 
     # -----------------------------------------------------
-    # Mixed text / embedded / split Base64
+    # Mixed text / embedded / split Base32
     # -----------------------------------------------------
 
     return _scan_embedded(
