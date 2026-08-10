@@ -12,5 +12,7 @@ cd nobase
 ```
 **Requirements**: Python. No external dependencies are required.
 
+## Features
+`detect-base64.py`: Decodes Base64 and Base32.
 ## API
 Coming soon!
