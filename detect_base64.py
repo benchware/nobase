@@ -47,33 +47,36 @@ _B32_RE = re.compile(
     re.IGNORECASE,
 )
 
-
 _CODE_PATTERNS = (
-    re.compile(r"<\s*script\b", re.I),
-    re.compile(r"javascript\s*:", re.I),
+    # Python / generic scripting
+    re.compile(r"\bprint\s*\(", re.I),
     re.compile(r"\beval\s*\(", re.I),
-
     re.compile(r"\bexec\s*\(", re.I),
     re.compile(r"\b__import__\s*\(", re.I),
     re.compile(r"\bsubprocess\s*\.", re.I),
     re.compile(r"\bos\s*\.\s*system\s*\(", re.I),
 
-    re.compile(r"#!\s*/(?:usr/)?bin/(?:ba)?sh\b", re.I),
+    # JavaScript / HTML
+    re.compile(r"<\s*script\b", re.I),
+    re.compile(r"javascript\s*:", re.I),
 
+    # Shell
+    re.compile(r"#!\s*/(?:usr/)?bin/(?:ba)?sh\b", re.I),
     re.compile(r"\bcurl\s+https?://", re.I),
     re.compile(r"\bwget\s+https?://", re.I),
 
-    re.compile(r"\bcmd\.exe\b", re.I),
+    # Windows CMD / BAT
+    re.compile(r"@echo\s+(?:off|on)\b", re.I),
+    re.compile(r"\bcmd(?:\.exe)?\s+/[a-z]+\b", re.I),
+    re.compile(r"\b(?:set|if|for|goto|call)\s+[^ \r\n]+", re.I),
+
+    # PowerShell
     re.compile(r"\bpowershell(?:\.exe)?\b", re.I),
-    re.compile(r"\binvoke-expression\b", re.I),
-    re.compile(r"\bstart-process\b", re.I),
-
-    re.compile(r"\bloadstring\s*\(", re.I),
-
-    re.compile(
-        r"\b(?:system|shell_exec|passthru)\s*\(",
-        re.I,
-    ),
+    re.compile(r"\bpwsh(?:\.exe)?\b", re.I),
+    re.compile(r"\bInvoke-(?:Expression|Command|WebRequest)\b", re.I),
+    re.compile(r"\bStart-Process\b", re.I),
+    re.compile(r"\bIEX\s*\(", re.I),
+    re.compile(r"\bSet-ExecutionPolicy\b", re.I),
 )
 
 
